@@ -1,0 +1,185 @@
+{
+  "Comment": "An example of the Amazon States Language using a parallel state to execute two branches at the same time.",
+  "StartAt": "FindBucketRegions",
+  "States": {
+    "FindBucketRegions": {
+      "Type": "Parallel",
+      "Next": "CombineRegionOutputs",
+      "Branches": [
+        {
+          "StartAt": "FindRegionForSourceBucket",
+          "States": {
+            "FindRegionForSourceBucket": {
+              "Type": "Task",
+              "Resource": "arn:aws:lambda:us-east-1:334387515186:function:get_bucket_location",
+              "InputPath": "$.source",
+              "ResultPath": "$.sourceRegion",
+              "OutputPath": "$",
+              "TimeoutSeconds": 15,
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "FindRegionForDestinationBucket",
+          "States": {
+            "FindRegionForDestinationBucket": {
+              "Type": "Task",
+              "Resource": "arn:aws:lambda:us-east-1:334387515186:function:get_bucket_location",
+              "InputPath": "$.destination",
+              "ResultPath": "$.destinationRegion",
+              "OutputPath": "$",
+              "TimeoutSeconds": 15,
+              "End": true
+            }
+          }
+        }
+      ]
+    },
+    "CombineRegionOutputs": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:334387515186:function:combine_dicts",
+      "InputPath": "$",
+      "ResultPath": "$",
+      "OutputPath": "$",
+      "TimeoutSeconds": 15,
+      "Next": "ValidateInput"
+    },
+    "ValidateInput": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:334387515186:function:validate_input",
+      "InputPath": "$",
+      "ResultPath": "$.regionsAreSame",
+      "OutputPath": "$",
+      "Next": "ConfirmInputValid"
+    },
+    "ConfirmInputValid": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.regionsAreSame",
+          "BooleanEquals": true,
+          "Next": "ProcessBuckets"
+        }
+      ],
+      "Default": "BucketRegionsNotEqualFailure"
+    },
+    "BucketRegionsNotEqualFailure": {
+      "Type": "Fail",
+      "Error": "BucketRegionsNotEqualError",
+      "Cause": "The source and destination buckets have different regions. This is currently not supported."
+    },
+    "ProcessBuckets": {
+      "Type": "Parallel",
+      "Next": "Success",
+      "Branches": [
+        {
+          "StartAt": "InjectSourceBucket",
+          "States": {
+            "InjectSourceBucket": {
+              "Type": "Pass",
+              "Result": "source",
+              "ResultPath": "$.listBucket",
+              "OutputPath": "$",
+              "Next": "UpdateSourceKeyList"
+            },
+            "UpdateSourceKeyList": {
+              "Type": "Task",
+              "Resource": "arn:aws:lambda:us-east-1:334387515186:function:list_bucket",
+              "InputPath": "$",
+              "ResultPath": "$.listResult",
+              "OutputPath": "$",
+              "TimeoutSeconds": 65,
+              "Next": "CopySourceKeys"
+            },
+            "CopySourceKeys": {
+              "Type": "Task",
+              "Resource": "arn:aws:lambda:us-east-1:334387515186:function:copy_keys",
+              "InputPath": "$",
+              "ResultPath": null,
+              "OutputPath": "$",
+              "TimeoutSeconds": 305,
+              "Retry": [
+                {
+                  "ErrorEquals": [ "Lambda.Unknown", "States.Timeout" ],
+                  "IntervalSeconds": 3,
+                  "MaxAttempts": 2,
+                  "BackoffRate": 1.5
+                }
+              ],
+              "Next": "EvaluateCopyListToken"
+            },
+            "EvaluateCopyListToken": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "Not": {
+                    "Variable": "$.listResult.token",
+                    "StringEquals": ""
+                  },
+                  "Next": "UpdateSourceKeyList"
+                }
+              ],
+              "Default": "FinishCopyBranch"
+            },
+            "FinishCopyBranch": {
+              "InputPath": null,
+              "Type": "Pass",
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "InjectDestinationBucket",
+          "States": {
+            "InjectDestinationBucket": {
+              "Type": "Pass",
+              "Result": "destination",
+              "ResultPath": "$.listBucket",
+              "OutputPath": "$",
+              "Next": "UpdateDestinationKeyList"
+            },
+            "UpdateDestinationKeyList": {
+              "Type": "Task",
+              "Resource": "arn:aws:lambda:us-east-1:334387515186:function:list_bucket",
+              "InputPath": "$",
+              "ResultPath": "$.listResult",
+              "OutputPath": "$",
+              "TimeoutSeconds": 65,
+              "Next": "DeleteOrphanedKeys"
+            },
+            "DeleteOrphanedKeys": {
+              "Type": "Task",
+              "Resource": "arn:aws:lambda:us-east-1:334387515186:function:delete_orphaned_keys",
+              "InputPath": "$",
+              "ResultPath": null,
+              "OutputPath": "$",
+              "Next": "EvaluateDestinationListToken"
+            },
+            "EvaluateDestinationListToken": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "Not": {
+                    "Variable": "$.listResult.token",
+                    "StringEquals": ""
+                  },
+                  "Next": "UpdateDestinationKeyList"
+                }
+              ],
+              "Default": "FinishDeleteBranch"
+            },
+            "FinishDeleteBranch": {
+              "InputPath": null,
+              "Type": "Pass",
+              "End": true
+            }
+          }
+        }
+      ]
+    },
+    "Success": {
+      "Type": "Succeed"
+    }
+  }
+}
